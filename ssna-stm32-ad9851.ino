@@ -27,7 +27,6 @@ HardwareTimer timer(1);
 
 #define TFT_DC 9
 #define TFT_CS 10
-#define rst  11
 
 #define  DATA   20
 #define  CLOCK  22 //pin connections for DDS //w_clk
@@ -55,7 +54,7 @@ int AD8307 = 3;
 #define WHITE           0xFFFF
 
 
-ILI9341_due tft = ILI9341_due(TFT_CS, TFT_DC, rst);
+ILI9341_due tft = ILI9341_due(TFT_CS, TFT_DC);
 
 ILI9341_due_gText t1(&tft);
 char textBuff[20];
@@ -66,9 +65,12 @@ uint16_t  colorFONDO = BLACK;
 float adc[320];
 int temp[320];
 Average<float> ave(320);
+Average<float> ave_temp(320);
 
 #define AVE_COUNT 20
 Average<float> ave_adc(AVE_COUNT);
+
+
 
 long f_inicial = 100000, f_final = 30000000;
 
@@ -103,7 +105,7 @@ void setup() {
   pinMode (LOAD,  OUTPUT);
   pinMode (RESET, OUTPUT);
   AD9851_init();
-  AD9851_reset();
+  AD9851_reset(0);
 
   ejes();
 
@@ -144,10 +146,22 @@ void loop()   // Arduino superloop - where everything gets done
     if ((lastEncoderPos[counter] != encoderpos[counter])) {
       encflag[counter] = LOW;
 
-      if (cambio_f)
-        f_final = f_final + (encoderpos[counter] - lastEncoderPos[counter]) * 100000;
+      if (cambio_f) {
+        if (f_final > 70e6)
+          f_final = 70e6;
+        else
+          f_final = f_final + (encoderpos[counter] - lastEncoderPos[counter]) * 100000;
+
+      }
       else
-        f_inicial = f_inicial + (encoderpos[counter] - lastEncoderPos[counter]) * 100000;
+      {
+        if (f_inicial < 1e5)
+          f_inicial = 1e5;
+
+        else
+          f_inicial = f_inicial + (encoderpos[counter] - lastEncoderPos[counter]) * 100000;
+      }
+
 
       //freq = freq + (encoderpos[counter] - lastEncoderPos[counter]) * 100000;
       //SetFrequency(freq);
@@ -156,14 +170,13 @@ void loop()   // Arduino superloop - where everything gets done
   }
 
   tft.setTextColor(YELLOW, BLACK);
-  sprintf(textBuff, "F: %d.%03d.%03d  ", freq / 1000000, (freq - freq / 1000000 * 1000000) / 1000,
+  sprintf(textBuff, "F: %d.%03d       ", freq / 1000000, (freq - freq / 1000000 * 1000000) / 1000,
           freq % 1000 );
   t1.drawString(textBuff, 10, 0);
 
-
   tft.setTextColor(WHITE, BLACK);
   sprintf(textBuff, "S: %d.%03d ", f_inicial / 1000000, (f_inicial - f_inicial / 1000000 * 1000000) / 1000 );
-  t1.drawString(textBuff, 100, 0);
+  t1.drawString(textBuff, 130, 0);
 
   sprintf(textBuff, "E: %d.%03d ", f_final / 1000000, (f_final - f_final / 1000000 * 1000000) / 1000 );
   t1.drawString(textBuff, 190, 0);
@@ -230,15 +243,16 @@ void graph(void) {
     ave.push(adc[i]);
   }
 
-  for (int i = 4; i < 320; i++)
+  for (int i = 0; i < 320; i++)
     tft.drawPixel(i, temp[i]  , BLACK);
 
   maximo = ave.maximum();
   minimo = ave.minimum();
 
-  for (int i = 4; i < 320; i++)
+  for (int i = 0; i < 320; i++)
   {
     temp[i] = map( adc[i], minimo, maximo, 234 , 20);
+    ave_temp.push(temp[i]);
     tft.drawPixel(i, temp[i]  , CYAN);
 
   }
@@ -247,13 +261,35 @@ void graph(void) {
 
 void graph_cursor(void) {
 
+  AD9851_init();
+  AD9851_reset(1);
+
   int paso = (f_final - f_inicial) / 320;
   int ejeX = 160;
   int diferencia = 0;
   int bucle = 1;
   static uint8_t enc_button_state = 0;
 
+  int minat = 0;
+  int maxat = 0;
+
+  ave_temp.maximum(&maxat);
+  ave_temp.minimum(&minat);
+
   tft.drawLine(ejeX, 20, ejeX, 234 , YELLOW);
+
+  tft.drawLine(320 - minat, 20, 320 - minat, 234 , MAGENTA);
+
+  tft.drawLine(320 - maxat, 20, 320 - maxat, 234 , GREEN);
+
+  long freq_cursor = (320 - maxat ) * paso + f_inicial ;
+
+  sprintf(textBuff, "F: %d.%03d  ", freq_cursor / 1000000, ( freq_cursor -  freq_cursor / 1000000 * 1000000) / 1000 );
+  t1.drawString(textBuff, 10, 150);
+
+  sprintf(textBuff, "G: %.02f dBm.  ", dBm_power(adc[320 - maxat] ));
+  t1.drawString(textBuff, 10, 170);
+
 
   while (bucle)
 
@@ -264,6 +300,13 @@ void graph_cursor(void) {
       if ((lastEncoderPos[counter] != encoderpos[counter])) {
         encflag[counter] = LOW;
         tft.drawLine(ejeX, 20, ejeX, 234 , BLACK);
+
+        if (ejeX == (320 - minat))
+          tft.drawLine(320 - minat, 20, 320 - minat, 234 , MAGENTA);
+
+        if (ejeX == (320 - maxat))
+          tft.drawLine(320 - maxat, 20, 320 - maxat, 234 , GREEN);
+
         tft.drawPixel(ejeX, temp[ejeX]  , CYAN);
         diferencia = (encoderpos[counter] - lastEncoderPos[counter]);
 
@@ -271,20 +314,27 @@ void graph_cursor(void) {
         else
           ejeX--;
 
-        if ( ejeX < 4 ) ejeX = 4;
+        if ( ejeX < 0 ) ejeX = 0;
         if ( ejeX > 319 ) ejeX = 319;
 
-        tft.drawLine(ejeX, 20, ejeX, 234 , YELLOW);
-        tft.setTextColor(WHITE, BLACK);
+        if ( ejeX == (320 - maxat))
+          tft.drawLine(320 - maxat, 20, 320 - maxat, 234 , GREEN);
 
-        long freq_cursor = ejeX * paso+f_inicial;
+        if ( ejeX == (320 - minat))
+          tft.drawLine(320 - minat, 20, 320 - minat, 234 , MAGENTA);
+
+
+        tft.drawLine(ejeX, 20, ejeX, 234 , YELLOW);
+
+
+
+        long freq_cursor = ejeX * paso + f_inicial;
 
         sprintf(textBuff, "F: %d.%03d.%03d  ", freq_cursor / 1000000, ( freq_cursor -  freq_cursor / 1000000 * 1000000) / 1000,
                 freq_cursor % 1000 );
         t1.drawString(textBuff, 10, 0);
 
-        tft.setTextColor(GREEN, BLACK);
-        sprintf(textBuff, "dBm: %.02f ", dBm_power(adc[ejeX] ));
+        sprintf(textBuff, "G: %.02f dBm.  ", dBm_power(adc[ejeX] ));
         t1.drawString(textBuff, 10, 210);
 
         lastEncoderPos[counter] = encoderpos[counter];
@@ -296,7 +346,13 @@ void graph_cursor(void) {
 
         bucle = 0;
         enc_button_state = 1;
-        tft.drawLine(ejeX, 20, ejeX, 234 , BLACK);
+
+        tft.fillRect(2, 2, 317, 237, BLACK);
+
+        AD9851_init();
+        AD9851_reset(0);
+
+
       }
 
     }
@@ -329,7 +385,7 @@ void SetFrequency(unsigned long frequency)
   shiftOut(DATA, CLOCK, LSBFIRST, tuning_word >> 8);
   shiftOut(DATA, CLOCK, LSBFIRST, tuning_word >> 16);
   shiftOut(DATA, CLOCK, LSBFIRST, tuning_word >> 24);
-  shiftOut(DATA, CLOCK, LSBFIRST, 0x09);
+  shiftOut(DATA, CLOCK, LSBFIRST, 0x01);
 
   digitalWrite (LOAD, HIGH);
 }
@@ -343,7 +399,18 @@ void AD9851_init()
   digitalWrite(DATA, LOW);
 }
 
-void AD9851_reset()
+void AD9851_sleep()
+{
+
+  digitalWrite(RESET, LOW);
+  digitalWrite(CLOCK, LOW);
+  digitalWrite(LOAD, LOW);
+  digitalWrite(DATA, LOW);
+}
+
+
+// define sleep=1 to power off the AD9851.
+void AD9851_reset(boolean sleep)
 {
   //reset sequence is:
   // CLOCK & LOAD = LOW
@@ -370,32 +437,13 @@ void AD9851_reset()
     digitalWrite(CLOCK, LOW);
     delay(2);
   }
-  shiftOut(DATA, CLOCK, LSBFIRST, 0x01);            //Write 0x01 to set 6x Multiplier and complete the init sequence
+
+  if (!sleep)
+    shiftOut(DATA, CLOCK, LSBFIRST, 0x01);            //Write 0x01 to set 6x Multiplier and complete the init sequence
+  else
+    shiftOut(DATA, CLOCK, LSBFIRST, 0x04);
   digitalWrite(LOAD, HIGH); //Raise the Load lone to cload the DDS registers and complete the process
-  /*
-    digitalWrite(CLOCK, LOW);
-    digitalWrite(LOAD, LOW);
 
-    digitalWrite(RESET, LOW);
-    delay(5);
-    digitalWrite(RESET, HIGH);  //pulse RESET
-    delay(5);
-    digitalWrite(RESET, LOW);
-    delay(5);
-
-    digitalWrite(CLOCK, LOW);
-    delay(5);
-    digitalWrite(CLOCK, HIGH);  //pulse CLOCK
-    delay(5);
-    digitalWrite(CLOCK, LOW);
-    delay(5);
-    digitalWrite(DATA, LOW);    //make sure DATA pin is LOW
-
-    digitalWrite(LOAD, LOW);
-    delay(5);
-    digitalWrite(LOAD, HIGH);  //pulse LOAD
-    delay(5);
-    digitalWrite(LOAD, LOW);*/
   // Chip is RESET now
 }
 
