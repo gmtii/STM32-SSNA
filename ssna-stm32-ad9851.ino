@@ -6,6 +6,8 @@
 #include "./fonts/Arial14.h"
 #include <Average.h>
 
+// SSNA STM32 based on http://rheslip.blogspot.com.es/2015/08/the-simple-scalar-network-analyser.html
+
 // multi encoder code with speed up values adapted for STM32-arduino by Matthias Diro
 
 #define MAXENCODERS 2
@@ -65,7 +67,7 @@ float adc[320];
 int temp[320];
 Average<float> ave(320);
 
-#define AVE_COUNT 10
+#define AVE_COUNT 20
 Average<float> ave_adc(AVE_COUNT);
 
 long f_inicial = 100000, f_final = 30000000;
@@ -73,8 +75,9 @@ long f_inicial = 100000, f_final = 30000000;
 char inputcmd[100];  // serial data input
 int cmdindex = 0;
 
-int freq = 200;
-int trigger = 2000;
+long freq;
+boolean cambio_f = 0;
+boolean cambio_cursor = 0;
 
 void setup() {
 
@@ -102,7 +105,6 @@ void setup() {
   AD9851_init();
   AD9851_reset();
 
-  SetFrequency(freq); // 1 Mhz default
   ejes();
 
   pinMode (LED, OUTPUT);
@@ -141,9 +143,11 @@ void loop()   // Arduino superloop - where everything gets done
   {
     if ((lastEncoderPos[counter] != encoderpos[counter])) {
       encflag[counter] = LOW;
-      if (f_final > 0)
-        f_final = f_final + (encoderpos[counter] - lastEncoderPos[counter]) * 100000;
 
+      if (cambio_f)
+        f_final = f_final + (encoderpos[counter] - lastEncoderPos[counter]) * 100000;
+      else
+        f_inicial = f_inicial + (encoderpos[counter] - lastEncoderPos[counter]) * 100000;
 
       //freq = freq + (encoderpos[counter] - lastEncoderPos[counter]) * 100000;
       //SetFrequency(freq);
@@ -159,7 +163,7 @@ void loop()   // Arduino superloop - where everything gets done
 
   tft.setTextColor(WHITE, BLACK);
   sprintf(textBuff, "S: %d.%03d ", f_inicial / 1000000, (f_inicial - f_inicial / 1000000 * 1000000) / 1000 );
-  t1.drawString(textBuff, 130, 0);
+  t1.drawString(textBuff, 100, 0);
 
   sprintf(textBuff, "E: %d.%03d ", f_final / 1000000, (f_final - f_final / 1000000 * 1000000) / 1000 );
   t1.drawString(textBuff, 190, 0);
@@ -172,13 +176,24 @@ void loop()   // Arduino superloop - where everything gets done
   if (!digitalRead(ENC_BUTTON)) {
     if (enc_button_state == 0) {
 
-      graph_cursor();
-      enc_button_state = 1;
-    }
+      if (cambio_cursor) {
+        cambio_cursor = 0;
+        graph_cursor();
 
+      }
+
+      else
+      { cambio_cursor = 1;
+        cambio_f ^= 1;
+
+      }
+      enc_button_state = 1;
+
+    }
   }
   else enc_button_state = 0; // flag switch not pressed
   graph();
+
 }
 
 // AD8307 outputs 25mv per db. 0db is 2.1v out
@@ -197,12 +212,6 @@ float dBm_power( float lectura ) {
   dBm = lectura - 2607;
   dBm = dBm * 0.13203125 ;
   return dBm;
-}
-
-void raw_power() {
-  Serial.print(" "); // may help Python parser
-  Serial.print(analogRead(AD8307));
-  Serial.println(" "); // may help Python parser
 }
 
 
@@ -234,33 +243,6 @@ void graph(void) {
 
   }
 
-}
-
-void graph_osc(void) {
-
-  int cuenta = 0;
-  trigger = 100;
-  int trigger_y = map(trigger, 4096, 0, 234, 20);
-
-  int paso = (f_final - f_inicial) / 320;
-
-  tft.drawLine(4, trigger_y, 319, trigger_y,  YELLOW);
-
-  for (int i = 4; i < 320; i++)
-    adc[i] = (float)analogRead(AD8307);
-
-  if ( map( adc[4], 4096, 0, 234 , 20) > trigger_y )
-  {
-
-
-    for (int i = 4; i < 320; i++)
-    {
-      tft.drawPixel(i, temp[i]  , BLACK);
-      //SetFrequency(f_inicial + i * paso);
-      temp[i] = map( adc[i], 4096, 0, 234 , 20);
-      tft.drawPixel(i, temp[i]  , CYAN);
-    }
-  }
 }
 
 void graph_cursor(void) {
@@ -295,7 +277,7 @@ void graph_cursor(void) {
         tft.drawLine(ejeX, 20, ejeX, 234 , YELLOW);
         tft.setTextColor(WHITE, BLACK);
 
-        long freq_cursor = ejeX * paso;
+        long freq_cursor = ejeX * paso+f_inicial;
 
         sprintf(textBuff, "F: %d.%03d.%03d  ", freq_cursor / 1000000, ( freq_cursor -  freq_cursor / 1000000 * 1000000) / 1000,
                 freq_cursor % 1000 );
@@ -306,9 +288,6 @@ void graph_cursor(void) {
         t1.drawString(textBuff, 10, 210);
 
         lastEncoderPos[counter] = encoderpos[counter];
-
-
-
       }
     }
 
